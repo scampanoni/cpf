@@ -1,4 +1,5 @@
 #define DEBUG_TYPE "orchestrator"
+#define CHECK_CONFLICT
 
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -14,6 +15,10 @@
 #include "liberty/Utilities/InstInsertPt.h"
 #include "liberty/Utilities/ModuleLoops.h"
 #include "liberty/Utilities/Timer.h"
+
+#ifdef CHECK_CONFLICT
+#include "liberty/Orchestration/MemEdgeChecker.h"
+#endif
 
 #include <iterator>
 
@@ -212,6 +217,10 @@ bool Orchestrator::findBestStrategy(
     std::unique_ptr<SelectedRemedies> &sRemeds, Critic_ptr &sCritic,
     unsigned threadBudget, bool ignoreAntiOutput, bool includeReplicableStages,
     bool constrainSubLoops, bool abortIfNoParallelStage) {
+
+#ifdef CHECK_CONFLICT
+  checkConflictsBetweenAnalysisAndProfile(loop, proxy, smtxMan, smtxLampMan);
+#endif
   BasicBlock *header = loop->getHeader();
   Function *fcn = header->getParent();
 
