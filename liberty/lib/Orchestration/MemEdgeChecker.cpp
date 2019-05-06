@@ -12,6 +12,7 @@
 #include "liberty/Orchestration/Remediator.h"
 #include "liberty/Orchestration/SmtxSlampRemed.h"
 #include "liberty/Orchestration/SmtxLampRemed.h"
+#include "liberty/SLAMP/SLAMPLoad.h"
 #include "PDG.hpp"
 
 #include "liberty/Orchestration/MemEdgeChecker.h"
@@ -108,11 +109,12 @@ namespace liberty
     // Loading LoopAA
 
     LoopAA *loopAA = proxy.getAnalysis<LoopAA>().getTopAA();
-    // loopAA->dump();
+    loopAA->dump();
 
     // Get Lamp and Slamp
     // memory specualation remediator 1 (with SLAMP)
     auto slampR = std::make_unique<SmtxSlampRemediator>(&smtxMan);
+    slamp::SLAMPLoadProfile &slamp = smtxMan.getSlampResult();
 
     // memory specualation remediator 2 (with LAMP)
     auto lampR = std::make_unique<SmtxLampRemediator>(&smtxLampMan, proxy);
@@ -154,13 +156,16 @@ namespace liberty
         bool lc = false;
         if (noMemoryDepWithAnalysis(sop, dop, LoopAA::Same, LoopAA::Same, loop, loopAA, true)){
           // test slamp memdep
-          Remediator::RemedResp slampRemedResp = slampR->memdep(sop, dop, lc, raw, loop);
-          if (slampRemedResp.depRes != DepResult::NoDep){
-            errs() << "SLAMP Disagrees II Dep: ";
-            printConflicts(sop, dop);
-            conflictCnt++;
+
+          if (slamp.isTargetLoop(loop)) {
+            Remediator::RemedResp slampRemedResp = slampR->memdep(sop, dop, lc, raw, loop);
+            if (slampRemedResp.depRes != DepResult::NoDep){
+              errs() << "SLAMP Disagrees II Dep: ";
+              printConflicts(sop, dop);
+              conflictCnt++;
+            }
           }
-              
+
           // test lamp memdep
           // TODO: For LAMP, have to figure out a way to turn off CAF (don't chain)
           Remediator::RemedResp lampRemedResp = lampR->memdep(sop, dop, lc, raw, loop);
@@ -174,11 +179,14 @@ namespace liberty
         lc = true;
         if (noMemoryDepWithAnalysis(sop, dop, LoopAA::Before, LoopAA::After, loop, loopAA, true)){
           // test slamp memdep
-          Remediator::RemedResp slampRemedResp = slampR->memdep(sop, dop, lc, raw, loop);
-          if (slampRemedResp.depRes != DepResult::NoDep){
-            errs() << "SLAMP Disagrees LC Dep: ";
-            printConflicts(sop, dop);
-            conflictCnt++;
+
+          if (slamp.isTargetLoop(loop)) {
+            Remediator::RemedResp slampRemedResp = slampR->memdep(sop, dop, lc, raw, loop);
+            if (slampRemedResp.depRes != DepResult::NoDep){
+              errs() << "SLAMP Disagrees LC Dep: ";
+              printConflicts(sop, dop);
+              conflictCnt++;
+            }
           }
               
           // test lamp memdep
