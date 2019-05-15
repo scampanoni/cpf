@@ -18,16 +18,14 @@
 #include "liberty/CodeGen/RoI.h"
 
 #include <set>
+#include <unordered_set>
+#include <unordered_map>
 
-namespace liberty
-{
-namespace SpecPriv
-{
+namespace liberty {
+namespace SpecPriv {
 using namespace llvm;
 
-
-struct Preprocess : public ModulePass
-{
+struct Preprocess : public ModulePass {
   static char ID;
   Preprocess() : ModulePass(ID) {}
 
@@ -37,38 +35,56 @@ struct Preprocess : public ModulePass
   Recovery &getRecovery() { return recovery; }
   const RecoveryFunction &getRecoveryFunction(Loop *loop) const;
 
-  //RoI &getRoI() { return roi; }
-  //const RoI &getRoI() const { return roi; }
+  RoI &getRoI() { return roi; }
+  const RoI &getRoI() const { return roi; }
 
   void addToLPS(Instruction *nI, Instruction *gravity);
   void replaceInLPS(Instruction *nI, Instruction *oI);
 
-  void getExecutingStages(Instruction* inst, std::vector<unsigned>& stages);
-  bool ifI2IsInI1IsIn(Instruction* i1, Instruction* i2);
+  void getExecutingStages(Instruction *inst, std::vector<unsigned> &stages);
+  bool ifI2IsInI1IsIn(Instruction *i1, Instruction *i2);
 
   void assert_strategies_consistent_with_ir();
 
+  std::unordered_set<const TerminatorInst *>
+  getSelectedCtrlSpecDeps(const BasicBlock *loopHeader) {
+    return selectedCtrlSpecDeps[loopHeader];
+  }
+
+  bool isSeparationSpecUsed(BasicBlock *loopHeader) {
+    return separationSpecUsed.count(loopHeader);
+  }
+
+  InstInsertPt getInitFcn() {
+    return initFcn;
+  }
+  InstInsertPt getFiniFcn() { return finiFcn; }
+
 private:
-  typedef std::set<const Value*> VSet;
+  typedef std::set<const Value *> VSet;
 
   RoI roi;
   Module *mod;
   Recovery recovery;
   Type *voidty, *voidptr;
   IntegerType *u8, *u16, *u32, *u64;
-  std::vector<Loop*> loops;
+  FunctionType *fv2v;
+  InstInsertPt initFcn, finiFcn;
+  std::vector<Loop *> loops;
+  std::unordered_map<const BasicBlock *, std::unordered_set<const TerminatorInst *>>
+      selectedCtrlSpecDeps;
+  std::unordered_set<const BasicBlock *> separationSpecUsed;
 
   void init(ModuleLoops &mloops);
 
   bool fixStaticContexts();
   bool demoteLiveOutsAndPhis(Loop *loop, LiveoutStructure &liveouts);
 
-
+  bool addInitializationFunction();
+  bool addFinalizationFunction();
 };
 
-}
-}
-
+} // namespace SpecPriv
+} // namespace liberty
 
 #endif
-

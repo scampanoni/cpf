@@ -130,8 +130,10 @@ Checkpoint *__specpriv_alloc_checkpoint(CheckpointManager *mgr)
     DEBUG(printf("Waiting for a checkpoint object: worker %u\n", __specpriv_my_worker_id()));
     ParallelControlBlock *pcb = __specpriv_get_pcb();
     Iteration currentIter = __specpriv_current_iter();
-    const Wid numWorkers = __specpriv_num_workers();
-    currentIter -= currentIter % numWorkers;
+    if (!__specpriv_runOnEveryIter()) {
+      const Wid numWorkers = __specpriv_num_workers();
+      currentIter -= currentIter % numWorkers;
+    }
 
     while( list_empty( &mgr->free ) && __specpriv_is_saturated(mgr) )
     {
@@ -505,10 +507,11 @@ void __specpriv_worker_perform_checkpoint(int isFinalCheckpoint)
 
   assert( ! __specpriv_i_am_main_process() );
 
-  //const Iteration currentIter = __specpriv_current_iter();
   Iteration currentIter = __specpriv_current_iter();
-  const Wid numWorkers = __specpriv_num_workers();
-  currentIter -= currentIter % numWorkers;
+  if (!__specpriv_runOnEveryIter()) {
+    const Wid numWorkers = __specpriv_num_workers();
+    currentIter -= currentIter % numWorkers;
+  }
   const Iteration effectiveIter = (isFinalCheckpoint) ? LAST_ITERATION : currentIter;
 
   ParallelControlBlock *pcb = __specpriv_get_pcb();
@@ -538,8 +541,8 @@ void __specpriv_worker_perform_checkpoint(int isFinalCheckpoint)
   __specpriv_commit_zero_or_more_checkpoints( &pcb->checkpoints );
 #endif
 
+  TIME( checkpoint_stop );
   TOUT(
-    TIME( checkpoint_stop );
     if( numCheckpoints < MAX_CHECKPOINTS )
     {
       CheckpointRecord *rec = &checkpoints[ numCheckpoints ];

@@ -54,6 +54,10 @@ static const int oscpu2physcore[NUM_PROCS] =
 static Wid numWorkers;
 static Wid myWorkerId;
 
+static Bool runOnEveryIter;
+
+// parallel stage replica id
+static Wid pstage_replica_id = NOT_A_PARALLEL_STAGE;
 
 // The global iteration number; maintained by
 // each worker.  Incremented by __specpriv_end_iter()
@@ -79,7 +83,7 @@ static Iteration simulateMisspeculationAtIter;
 // and iteration...
 
 // Called once on program startup by main process
-void __specpriv_begin(void)
+void __parallel_begin(void)
 {
   // We are in the main process.
   myWorkerId = MAIN_PROCESS;
@@ -95,6 +99,27 @@ void __specpriv_begin(void)
     numWorkers = (Wid) n;
   }
 
+  DEBUG(printf("Available workers: %u\n", numWorkers));
+
+  // Save old affinity
+  sched_getaffinity(0, sizeof(cpu_set_t), &old_affinity);
+
+  // Set affinitiy: only processor zero
+#if (AFFINITY & MP0STARTUP) != 0
+  cpu_set_t affinity;
+  CPU_ZERO( &affinity );
+  CPU_SET( CORE(0), &affinity );
+  sched_setaffinity(0, sizeof(cpu_set_t), &affinity );
+#endif
+}
+
+// Called once on program startup by main process
+// for separation speculation
+void __specpriv_begin(void)
+{
+  // We are in the main process.
+  myWorkerId = MAIN_PROCESS;
+
 #if SIMULATE_MISSPEC != 0
   simulateMisspeculationAtIter = ~0U;
   const char *smai = getenv("SIMULATE_MISSPEC_ITER");
@@ -108,17 +133,6 @@ void __specpriv_begin(void)
 
   __specpriv_initialize_main_heaps();
   __specpriv_init_private();
-
-  // Save old affinity
-  sched_getaffinity(0, sizeof(cpu_set_t), &old_affinity);
-
-  // Set affinitiy: only processor zero
-#if (AFFINITY & MP0STARTUP) != 0
-  cpu_set_t affinity;
-  CPU_ZERO( &affinity );
-  CPU_SET( CORE(0), &affinity );
-  sched_setaffinity(0, sizeof(cpu_set_t), &affinity );
-#endif
 
 #if JOIN == SPIN
   // Replace the SIGCHLD handler with SIG_IGN.
@@ -135,7 +149,7 @@ void __specpriv_begin(void)
 }
 
 // Called once by main process on program shutdown
-void __specpriv_end(void)
+void __parallel_end(void)
 {
   assert( myWorkerId == MAIN_PROCESS );
 
@@ -143,6 +157,13 @@ void __specpriv_end(void)
   // Reset affinity
   sched_setaffinity(0, sizeof(cpu_set_t), &old_affinity);
 #endif
+}
+
+// Called once by main process on program shutdown
+// for separation speculation
+void __specpriv_end(void)
+{
+  assert( myWorkerId == MAIN_PROCESS );
 
   __specpriv_destroy_main_heaps();
 }
@@ -198,6 +219,9 @@ static void __specpriv_worker_starts(Iteration firstIter, Wid wid)
   assert(wid != MAIN_PROCESS );
   assert(wid < numWorkers);
   myWorkerId = wid;
+
+  // true by default
+  runOnEveryIter = 1;
 
 #if (AFFINITY & RRPUNT) != 0
   // 'rrpunt'
@@ -293,13 +317,20 @@ void __specpriv_worker_finishes(Exit exitTaken)
 
 Iteration __specpriv_current_iter(void)
 {
+  if (runOnEveryIter)
+    return currentIter;
+
   // Return global iteration count instead of thread-specific one
   if ( myWorkerId == MAIN_PROCESS)
     return (currentIter * numWorkers);
 
   Iteration globalCurIter = myWorkerId + (currentIter * numWorkers);
   return globalCurIter;
-  //return currentIter;
+}
+
+Bool __specpriv_runOnEveryIter()
+{
+  return runOnEveryIter;
 }
 
 Wid __specpriv_my_worker_id(void)
@@ -315,6 +346,12 @@ Bool __specpriv_i_am_main_process(void)
 Wid __specpriv_num_workers(void)
 {
   return numWorkers;
+}
+
+void __specpriv_set_pstage_replica_id(Wid rep_id)
+{
+  //DBG( "rep_id set to %u\n", rep_id );
+  pstage_replica_id = rep_id;
 }
 
 Iteration __specpriv_last_committed(void)
@@ -401,6 +438,10 @@ Wid __specpriv_spawn_workers(Iteration firstIter)
 #endif
 
   Wid wid;
+
+  // true by default
+  runOnEveryIter = 1;
+
   for(wid=0; wid<numWorkers; ++wid)
   {
 #if JOIN == SPIN
@@ -542,7 +583,10 @@ void __specpriv_end_iter(void)
     _exit(0);
 
   ++currentIter;
-  Iteration globalCurIter = myWorkerId + (currentIter * numWorkers);
+  Iteration globalCurIter = currentIter;
+  if (!runOnEveryIter)
+    globalCurIter = myWorkerId + (currentIter * numWorkers);
+
   //__specpriv_advance_iter(++currentIter);
   __specpriv_advance_iter(globalCurIter);
 }
