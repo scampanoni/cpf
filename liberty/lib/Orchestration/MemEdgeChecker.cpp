@@ -98,8 +98,11 @@ namespace liberty
   // to identify potential conflicts
   void checkConflictsBetweenAnalysisAndProfile(Loop *loop, Pass &proxy,
       SmtxSlampSpeculationManager &smtxMan, SmtxSpeculationManager &smtxLampMan){
-    
-    errs() << "!!!!!!!!!\nCONFLICTS:\n";
+
+    BasicBlock *header = loop->getHeader();
+    Function *fcn = header->getParent();
+
+    errs() << "!!!!!!!!!\nCONFLICTS for " << fcn->getName() << "::" << header->getName() << ":\n";
     int conflictCnt = 0;
     // if not pdg 
     auto pdg = std::make_unique<llvm::PDG>();
@@ -109,7 +112,7 @@ namespace liberty
     // Loading LoopAA
 
     LoopAA *loopAA = proxy.getAnalysis<LoopAA>().getTopAA();
-    loopAA->dump();
+    // loopAA->dump();
 
     // Get Lamp and Slamp
     // memory specualation remediator 1 (with SLAMP)
@@ -202,7 +205,8 @@ namespace liberty
       }
     }
  
-    errs() << "Conflict Count: " << conflictCnt << "\n!!!!!!!\n";
+    errs() << "Conflict Count for " << fcn->getName() << "::" << header->getName()
+                              << " : " << conflictCnt << "\n!!!!!!!!!\n";
   }
  
 } // namespace liberty

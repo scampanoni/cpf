@@ -53,6 +53,12 @@ LoopAA::AliasResult LLVMAAResults::alias(
     const Value *ptrB, unsigned sizeB,
     const Loop *L) {
 
+  // ZY: LLVM AA seems only applicable for II deps
+  // sot: mustAlias from standard LLVM AA could be misleading for loop carried deps
+  if (rel != LoopAA::Same)
+    return LoopAA::alias(ptrA, sizeA, rel, ptrB, sizeB, L);
+
+
   // only handles intra-iteration mem queries
   auto *funA = getParent(ptrA);
   if (!funA || !notDifferentParent(ptrA, ptrB))
@@ -74,10 +80,6 @@ LoopAA::AliasResult LLVMAAResults::alias(
   else  //aaRes == llvm::MustAlias
     aaLoopAARes = LoopAA::MustAlias;
 
-  // mustAlias from standard LLVM AA could be misleading for loop carried deps
-  if (rel != LoopAA::Same)
-    return LoopAA::alias(ptrA, sizeA, rel, ptrB, sizeB, L);
-
   return LoopAA::AliasResult(aaLoopAARes &
                              LoopAA::alias(ptrA, sizeA, rel, ptrB, sizeB, L));
 }
@@ -86,6 +88,9 @@ LoopAA::ModRefResult LLVMAAResults::modref(const Instruction *A,
                                            TemporalRelation rel,
                                            const Value *ptrB, unsigned sizeB,
                                            const Loop *L) {
+  // ZY: LLVM AA seems only applicable for II deps
+  if (rel != LoopAA::Same)
+    return LoopAA::alias(ptrA, sizeA, rel, ptrB, sizeB, L);
 
   auto *funA = A->getParent()->getParent();
   auto *funB = getParent(ptrB);
@@ -111,6 +116,10 @@ LoopAA::ModRefResult LLVMAAResults::modref(const Instruction *A,
                                            TemporalRelation rel,
                                            const Instruction *B,
                                            const Loop *L) {
+  // ZY: LLVM AA seems only applicable for II deps
+  if (rel != LoopAA::Same)
+    return LoopAA::alias(ptrA, sizeA, rel, ptrB, sizeB, L);
+
   auto *funA = A->getParent()->getParent();
   auto *funB = B->getParent()->getParent();
 
