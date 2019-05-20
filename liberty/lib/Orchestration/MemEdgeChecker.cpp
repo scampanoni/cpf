@@ -102,7 +102,7 @@ namespace liberty
     BasicBlock *header = loop->getHeader();
     Function *fcn = header->getParent();
 
-    errs() << "!!!!!!!!!\nCONFLICTS for " << fcn->getName() << "::" << header->getName() << ":\n";
+    errs() << "!!!!!!!!!\nCONFLICTS for " << fcn->getName() << " :: " << header->getName() << ":\n";
     int conflictCnt = 0;
     // if not pdg 
     auto pdg = std::make_unique<llvm::PDG>();
@@ -205,7 +205,7 @@ namespace liberty
       }
     }
  
-    errs() << "Conflict Count for " << fcn->getName() << "::" << header->getName()
+    errs() << "Conflict Count for " << fcn->getName() << " :: " << header->getName()
                               << " : " << conflictCnt << "\n!!!!!!!!!\n";
   }
  
