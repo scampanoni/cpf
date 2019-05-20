@@ -99,6 +99,7 @@ LoopAA::ModRefResult LLVMAAResults::modref(const Instruction *A,
   auto aaRes = aa->getModRefInfo(A, ptrB, sizeB);
 
   if (aaRes == llvm::MRI_NoModRef) {
+    // DEBUG(errs()<<"NoModRef 1 by LLVM AA" << *A << " --> " << *B << "\n");
     ++numNoModRef;
     return LoopAA::NoModRef;
   }
@@ -131,14 +132,27 @@ LoopAA::ModRefResult LLVMAAResults::modref(const Instruction *A,
         aa->getModRefInfo(ImmutableCallSite(callA), ImmutableCallSite(callB));
   else if (callB)
     aaRes = aa->getModRefInfo(nA, ImmutableCallSite(callB));
-  else
+  else{
     aaRes = aa->getModRefInfo(A, MemoryLocation::get(B));
+    //switch (aa->alias(MemoryLocation::get(A), MemoryLocation::get(B))) {
+    //  case PartialAlias:
+    //  case MayAlias:
+    //  case MustAlias:
+    //    break;
+    //  case NoAlias:
+    //    DEBUG(errs()<<"NoModRef 2 by LLVM AA" << *A << " --> " << *B << "\n");
+    //    ++numNoModRef;
+    //    return LoopAA::NoModRef;
+    //}
+  }
 
   if (aaRes == llvm::MRI_NoModRef) {
+    // DEBUG(errs()<<"NoModRef 2 by LLVM AA" << *A << " --> " << *B << "\n");
     ++numNoModRef;
     return LoopAA::NoModRef;
   }
 
+  //return LoopAA::ModRefResult(LoopAA::modref(A, rel, B, L));
   return LoopAA::ModRefResult(aaRes & LoopAA::modref(A, rel, B, L));
 }
 
