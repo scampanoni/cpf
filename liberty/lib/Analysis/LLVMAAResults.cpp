@@ -90,7 +90,7 @@ LoopAA::ModRefResult LLVMAAResults::modref(const Instruction *A,
                                            const Loop *L) {
   // ZY: LLVM AA seems only applicable for II deps
   if (rel != LoopAA::Same)
-    return LoopAA::alias(ptrA, sizeA, rel, ptrB, sizeB, L);
+    return LoopAA::modref(A, rel, ptrB, sizeB, L);
 
   auto *funA = A->getParent()->getParent();
   auto *funB = getParent(ptrB);
@@ -118,7 +118,7 @@ LoopAA::ModRefResult LLVMAAResults::modref(const Instruction *A,
                                            const Loop *L) {
   // ZY: LLVM AA seems only applicable for II deps
   if (rel != LoopAA::Same)
-    return LoopAA::alias(ptrA, sizeA, rel, ptrB, sizeB, L);
+    return LoopAA::modref(A, rel, B, L);
 
   auto *funA = A->getParent()->getParent();
   auto *funB = B->getParent()->getParent();
