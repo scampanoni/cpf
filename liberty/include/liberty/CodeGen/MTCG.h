@@ -9,6 +9,8 @@
 #include "liberty/CodeGen/Preprocess.h"
 #include "liberty/Speculation/Classify.h"
 
+#include <stack>
+
 #define MTCG_VALUE_DEBUG 0
 #define MTCG_CTRL_DEBUG 0
 
@@ -205,7 +207,8 @@ private:
   ControlSpeculation::LoopBlock closestRelevantPostdom(BasicBlock *bb, const BBSet &rel, const LoopPostDom &pdt, BB2LB &cache) const;
   ControlSpeculation::LoopBlock closestRelevantDom(BasicBlock *bb, const BBSet &rel, const LoopDom &dt, BB2LB &cache) const;
 
-  void markIterationBoundaries(BasicBlock *preheader);
+  void markIterationBoundaries(BasicBlock *preheader,
+                               const PipelineStage &stage);
 
   // ----------------- Invocation ----------------------
   // These methods take the functions representing each pipeline stage,

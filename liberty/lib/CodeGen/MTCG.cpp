@@ -170,7 +170,7 @@ Function *MTCG::createStage(PreparedStrategy &strategy, unsigned stageno, const 
   BasicBlock *entry = &fcn->getEntryBlock();
   BranchInst::Create( preheader, entry );
 
-  markIterationBoundaries(preheader);
+  markIterationBoundaries(preheader, stage);
 
 #if (MTCG_CTRL_DEBUG || MTCG_VALUE_DEBUG)
   Module *mod = fcn->getParent();
@@ -272,39 +272,38 @@ BasicBlock *MTCG::stitchLoops(
 
     if( !phi_off )
     {
-      // Create a dummy PHI whose incoming values are all 'undef'
-      phi_off = PHINode::Create( phi_on->getType(), 0, "phi_off.undef", &*(header_off->getFirstInsertionPt()) );
+      Value *incoming_v = NULL;
 
-      Value* incoming_v = NULL;
-
-      for (unsigned i = 0 ; i < phi->getNumIncomingValues() ; i++)
-      {
-        if ( i == 0 )
+      for (unsigned i = 0; i < phi->getNumIncomingValues(); i++) {
+        if (i == 0)
           incoming_v = phi->getIncomingValue(i);
         else if (incoming_v != phi->getIncomingValue(i))
           incoming_v = NULL;
       }
 
-      if ( incoming_v == NULL || !liveIns.count(incoming_v) )
-        incoming_v = UndefValue::get( phi->getType() );
-      else
-      {
-        // all incoming values are idential, and live-ins, thus it is okay to take any operand from
-        // phi_on instruction as an incoming value of phi_off
+      if (incoming_v != NULL && liveIns.count(incoming_v)) {
+        // all incoming values are idential, and live-ins, thus it is okay to
+        // take any operand from phi_on instruction as an incoming value of
+        // phi_off
+
+        // Create a dummy PHI whose incoming values are all 'undef'
+        phi_off = PHINode::Create(phi_on->getType(), 0, "phi_off.undef",
+                                  &*(header_off->getFirstInsertionPt()));
 
         incoming_v = phi_on->getIncomingValue(0);
-      }
 
-      for(pred_iterator i=pred_begin(header_off), e=pred_end(header_off); i!=e; ++i)
-      {
-        BasicBlock *pred = *i;
-        phi_off->addIncoming(incoming_v, pred);
+        for (pred_iterator i = pred_begin(header_off), e = pred_end(header_off);
+             i != e; ++i) {
+          BasicBlock *pred = *i;
+          phi_off->addIncoming(incoming_v, pred);
+        }
       }
     }
 
+    /*
     if( !phi_on || !phi_off )
     {
-      // This is an error.
+      // This is an error. -> not true if lc reg deps not demoted to memory
 
       errs() << "PHI Node: " << *phi << '\n';
       if( phi_on )
@@ -320,7 +319,7 @@ BasicBlock *MTCG::stitchLoops(
       assert( phi_on && phi_off
       && "PHI node should appear in neither ON nor OFF, or both ON and OFF.");
     }
-
+    */
 
     PHINode *newPhi = PHINode::Create(
       phi->getType(),
@@ -332,6 +331,24 @@ BasicBlock *MTCG::stitchLoops(
 
     if( phi_off )
       stitchPhi(preheader_off, phi_off, newPreheader, newPhi);
+    else {
+      // Create a dummy PHI whose incoming value is the phi in the new stitch
+      // loop header (OFF iteration does not change the value, just passes on
+      // the one it received)
+      phi_off =
+          PHINode::Create(phi_on->getType(), 0, "phi_off." + phi->getName(),
+                          &*(header_off->getFirstInsertionPt()));
+
+      phi_off->addIncoming(newPhi, preheader_off);
+
+      for (pred_iterator i = pred_begin(header_off), e = pred_end(header_off);
+           i != e; ++i) {
+        BasicBlock *pred = *i;
+
+        if (newPhi->getBasicBlockIndex(pred) == -1 && pred != preheader_off)
+          newPhi->addIncoming(phi_off, pred);
+      }
+    }
   }
 
   replaceIncomingEdgesExcept(header_off,preheader_off,newHeader);
@@ -782,7 +799,6 @@ BasicBlock *MTCG::copyInstructions(
 
     if (clone)
     {
-      // assert that clone has a misspec call
 
       bool has_misspec_call = false;
       for(BasicBlock::iterator ii=clone->begin() ; ii!=clone->end() ; ++ii)
@@ -792,21 +808,31 @@ BasicBlock *MTCG::copyInstructions(
           has_misspec_call = true;
       }
 
-      assert( has_misspec_call && "==== Clone of loop exit should have a misspec call within it" );
+      // should not assert that clone has a misspec call
+      // loop exits blocks could also store redux variables, not only meant for control misspec
+      // assert( has_misspec_call && "==== Clone of loop exit should have a misspec call within it" );
 
-      // Replace terminator to a UnreachableInst
-
-      clone->getTerminator()->eraseFromParent();
-      new UnreachableInst(ctx, clone);
-
-      continue;
+      if (has_misspec_call) {
+        // Replace terminator to a UnreachableInst
+        clone->getTerminator()->eraseFromParent();
+        new UnreachableInst(ctx, clone);
+        continue;
+      }
     }
 
     // Call _worker_finishes() to end this worker and announce which
     // loop exit was taken.
     unsigned exitNumber = i->second;
     Twine exitName = Twine("exit.") + Twine(exitNumber) + blockNameSuffix;
-    BasicBlock *exitBB = BasicBlock::Create(ctx, exitName, fcn);
+
+    BasicBlock *exitBB;
+    if (clone) {
+      // in this case the exitBB is storing live-out redux variables
+      exitBB = clone;
+      exitBB->setName(exitName);
+      exitBB->getTerminator()->eraseFromParent();
+    } else
+      exitBB = BasicBlock::Create(ctx, exitName, fcn);
 
     // Clear all queues from which I might consume.
     for(unsigned prior=0; prior<stageno; ++prior)
@@ -844,7 +870,7 @@ BasicBlock *MTCG::copyInstructions(
 
     // when spawning processes once, workers need to return
     ReturnInst::Create(ctx, exitBB);
-    //new UnreachableInst(ctx, exitBB);
+    // new UnreachableInst(ctx, exitBB);
 
     vmap[ term->getSuccessor(i->first.second) ] = exitBB;
   }
@@ -1182,14 +1208,17 @@ ControlSpeculation::LoopBlock MTCG::closestRelevantDom(BasicBlock *bb, const BBS
   return cache[bb] = iter;
 }
 
-void MTCG::markIterationBoundaries(BasicBlock *preheader)
-{
+void MTCG::markIterationBoundaries(BasicBlock *preheader,
+                                   const PipelineStage &stage) {
   Function *fcn = preheader->getParent();
   Module *mod = fcn->getParent();
   Api api(mod);
   LLVMContext &ctx = mod->getContext();
+  IntegerType *u32 = Type::getInt32Ty(ctx);
+  Value *zero = ConstantInt::get(u32, 0);
   BasicBlock *header = preheader->getTerminator()->getSuccessor(0);
   Constant *enditer = api.getEndIter();
+  Constant *ckptcheck = api.getCkptCheck();
 
   // Call begin iter at top of loop
   CallInst::Create( api.getBeginIter(), "", &*( header->getFirstInsertionPt() ) );
@@ -1202,6 +1231,7 @@ void MTCG::markIterationBoundaries(BasicBlock *preheader)
   // == loop backedges, loop exits.
   typedef std::vector< RecoveryFunction::CtrlEdge > CtrlEdges;
   CtrlEdges iterationBounds;
+  CtrlEdges loopExitBounds;
   for(Loop::block_iterator i=loop->block_begin(), e=loop->block_end(); i!=e; ++i)
   {
     BasicBlock *bb = *i;
@@ -1216,36 +1246,87 @@ void MTCG::markIterationBoundaries(BasicBlock *preheader)
 
       // Loop exit
       else if( ! loop->contains(dest) )
-        iterationBounds.push_back( RecoveryFunction::CtrlEdge(term,sn) );
+        loopExitBounds.push_back( RecoveryFunction::CtrlEdge(term,sn) );
     }
   }
 
-  for(unsigned i=0, N=iterationBounds.size(); i<N; ++i)
-  {
-    TerminatorInst *term = iterationBounds[i].first;
+  std::string save_redux_lc_name = "save.redux.lc";
+
+  for (unsigned i = 0, N = iterationBounds.size(), K = loopExitBounds.size();
+       i < N + K; ++i) {
+    TerminatorInst *term;
+    unsigned sn;
+    if (i < N) {
+      term = iterationBounds[i].first;
+      sn = iterationBounds[i].second;
+    } else {
+      term = loopExitBounds[i - N].first;
+      sn = loopExitBounds[i - N].second;
+    }
     BasicBlock *source = term->getParent();
-    unsigned sn = iterationBounds[i].second;
     BasicBlock *dest = term->getSuccessor(sn);
 
     {
-      BasicBlock *split = BasicBlock::Create(ctx,"end.iter",fcn);
+      BasicBlock *split = BasicBlock::Create(ctx, "end.iter", fcn);
 
       // Update PHIs in dest
-      for(BasicBlock::iterator j=dest->begin(), z=dest->end(); j!=z; ++j)
-      {
-        PHINode *phi = dyn_cast< PHINode >( &*j );
-        if( !phi )
+      for (BasicBlock::iterator j = dest->begin(), z = dest->end(); j != z;
+           ++j) {
+        PHINode *phi = dyn_cast<PHINode>(&*j);
+        if (!phi)
           break;
 
         int idx = phi->getBasicBlockIndex(source);
-        if( idx != -1 )
-          phi->setIncomingBlock(idx,split);
+        if (idx != -1)
+          phi->setIncomingBlock(idx, split);
       }
       term->setSuccessor(sn, split);
-      split->moveAfter( source );
+      split->moveAfter(source);
 
       CallInst::Create(enditer, "", split);
-      BranchInst::Create(dest,split);
+      BranchInst::Create(dest, split);
+
+      // for loop-carried and reducible live-outs store before checkpoints at
+      // end of every iteration (no need to store at every iteration).
+
+      // Reducible live-outs are stored at every loop exit already from
+      // preprocessing
+      if (i >= N)
+        continue;
+
+      // look if there a BB that stores redux and other loop-carried variables
+      // (added by Preprocess)
+      std::string sourceBBName = source->getName().str();
+      if (sourceBBName.find(save_redux_lc_name) == std::string::npos)
+        continue;
+
+      BasicBlock *dest = split;
+      BasicBlock *splitCkpt = source;
+      splitCkpt->setName("ckpt.check");
+
+      BasicBlock *save_redux_lc = BasicBlock::Create(ctx, "save.redux.lc", fcn);
+      save_redux_lc->moveAfter(splitCkpt);
+      BranchInst::Create(split, save_redux_lc);
+
+      // remove all instructions from source BB (aka save_redux_lc) and add them
+      // to a newly created save.redux.lc BB that will be invoked conditionally
+      std::stack<Instruction *> storeRxLCInsts;
+      for (Instruction &I : *splitCkpt) {
+        if (!I.isTerminator())
+          storeRxLCInsts.push(&I);
+      }
+      while (!storeRxLCInsts.empty()) {
+        Instruction *I = storeRxLCInsts.top();
+        storeRxLCInsts.pop();
+        I->removeFromParent();
+        InstInsertPt::Beginning(save_redux_lc) << I;
+      }
+      term->eraseFromParent(); // delete old term
+
+      Instruction *callckptcheck = CallInst::Create(ckptcheck);
+      Instruction *cmp = new ICmpInst(ICmpInst::ICMP_EQ, callckptcheck, zero);
+      Instruction *br = BranchInst::Create(split, save_redux_lc, cmp);
+      InstInsertPt::End(splitCkpt) << callckptcheck << cmp << br;
     }
   }
 

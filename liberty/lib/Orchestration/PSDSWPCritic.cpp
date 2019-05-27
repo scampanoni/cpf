@@ -633,7 +633,19 @@ void PSDSWPCritic::simplifyPDG(PDG *pdg) {
   for (auto edge : toBeRemovedEdges) {
     // DEBUG(errs() << " Removing loop-carried from " << *edge->getOutgoingT()
     //             << " to " << *edge->getIncomingT() << '\n');
-    optimisticPDG->removeEdge(edge);
+
+    // all pdg nodes involved in a reduction should remain in the same scc (and
+    // stage). Loop-carried deps handled by reduction cannot be removed
+    // completely since the reduction cycle will be broken. These cycles should
+    // remain but they can belong in a parallel stage. Thus, loop-carried deps
+    // handled by reduction are marked as intra-iteration to allow integration
+    // in parallel stage and avoid cross-stage distribution.
+    if (edge->getMinRemovalCost() == DEFAULT_REDUX_REMED_COST &&
+        edge->isLoopCarriedDependence()) {
+      edge->setLoopCarried(false);
+    } else {
+      optimisticPDG->removeEdge(edge);
+    }
   }
 
   BasicBlock *header = loop->getHeader();
@@ -705,7 +717,9 @@ unsigned long PSDSWPCritic::moveOffStage(
                                : make_range(pdgNode->begin_outgoing_edges(),
                                             pdgNode->end_outgoing_edges());
     for (auto edge : edges) {
-      if (edge->isRemovableDependence() && !edgesNotRemoved.count(edge))
+      if ((edge->isRemovableDependence() &&
+           edge->getMinRemovalCost() != DEFAULT_REDUX_REMED_COST) &&
+          !edgesNotRemoved.count(edge))
         continue;
       Value *V = (moveToFront) ? edge->getOutgoingT() : edge->getIncomingT();
       if (!pdg.isInternal(V))
@@ -732,10 +746,20 @@ bool PSDSWPCritic::avoidElimDep(const PDG &pdg, PipelineStrategy &ps,
   if (edge->getMinRemovalCost() <= costThreshold)
     return false;
 
+  Value *inV = edge->getIncomingT();
+  Instruction *inI = dyn_cast<Instruction>(inV);
+  Value *outV = edge->getOutgoingT();
+  Instruction *outI = dyn_cast<Instruction>(outV);
+
   // either move the src dep inst to the first seq stage (if any) or the dest
   // dep inst to the last seq stage (if any).
   // similarly proceed with the rest of the dependent instructions until the
   // pstage is reduced below a threshold
+
+  // if one of the inst is already moved to the appropriate stage, dep can be
+  // avoided with no additional movement
+  if (inI && outI && (instsMovedToFront.count(outI) || instsMovedToBack.count(inI)))
+    return true;
 
   unsigned numOfStages = ps.stages.size();
   bool alreadyFrontSeqStage = ps.stages[0].type == PipelineStage::Sequential;
@@ -748,29 +772,25 @@ bool PSDSWPCritic::avoidElimDep(const PDG &pdg, PipelineStrategy &ps,
       (alreadyBackSeqStage) ? &ps.stages[numOfStages - 1].instructions
                             : nullptr;
 
-  Value *inV = edge->getIncomingT();
   unsigned long moveFrontCost = ULONG_MAX;
   unordered_set<Instruction *> tmpInstsMovedToFront;
   // TODO: probably requiring alreadyFrontSeqStage is not necessary
-  if (pdg.isInternal(inV) && alreadyFrontSeqStage) {
-    Instruction *inI = dyn_cast<Instruction>(inV);
-    assert(inI && "pdg node is not an instruction");
+  if (pdg.isInternal(outV) && alreadyFrontSeqStage) {
+    assert(outI && "pdg node is not an instruction");
     std::queue<Instruction*> worklist;
-    worklist.push(inI);
+    worklist.push(outI);
     moveFrontCost = moveOffStage(
         pdg, worklist, tmpInstsMovedToFront, instsFrontSeqStage,
         instsMovedToFront, instsMovedToBack, instsBackSeqStage, edgesNotRemoved,
         offPStageWeight, parallelStageWeight, true);
   }
 
-  Value *outV = edge->getOutgoingT();
   unsigned long moveBackCost = ULONG_MAX;
   unordered_set<Instruction *> tmpInstsMovedToBack;
-  if (pdg.isInternal(outV) && alreadyBackSeqStage) {
-    Instruction *outI = dyn_cast<Instruction>(outV);
-    assert(outI && "pdg node is not an instruction");
+  if (pdg.isInternal(inV) && alreadyBackSeqStage) {
+    assert(inI && "pdg node is not an instruction");
     std::queue<Instruction *> worklist;
-    worklist.push(outI);
+    worklist.push(inI);
     moveBackCost = moveOffStage(
         pdg, worklist, tmpInstsMovedToBack, instsBackSeqStage, instsMovedToBack,
         instsMovedToFront, instsFrontSeqStage, edgesNotRemoved, offPStageWeight,
