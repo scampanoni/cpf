@@ -162,6 +162,7 @@ namespace liberty
 
           if (slamp.isTargetLoop(loop)) {
             Remediator::RemedResp slampRemedResp = slampR->memdep(sop, dop, lc, raw, loop);
+           
             if (slampRemedResp.depRes != DepResult::NoDep){
               errs() << "SLAMP Disagrees II Dep: ";
               printConflicts(sop, dop);
@@ -201,6 +202,16 @@ namespace liberty
             conflictCnt++;
           }
         }
+        // else{
+        //   if (slamp.isTargetLoop(loop)) {
+        //     Remediator::RemedResp slampRemedResp = slampR->memdep(sop, dop, lc, raw, loop);
+        //     if (slampRemedResp.depRes != DepResult::NoDep)
+        //       errs() << "SLAMP says Dep for: ";
+        //     else
+        //       errs() << "SLAMP says NoDep for: ";
+        //     printConflicts(sop, dop);
+        //   }
+        // }
  
       }
     }
