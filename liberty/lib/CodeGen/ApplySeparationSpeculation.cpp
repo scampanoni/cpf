@@ -1000,93 +1000,154 @@ bool ApplySeparationSpec::reallocateInst(const HeapAssignment &asgn, const HeapA
 }
 
 // TODO: generalize and merge with the other version of reallocateInst.
-bool ApplySeparationSpec::reallocateInst(const HeapAssignment &asgn, const HeapAssignment::ReduxAUSet &aus)
+bool ApplySeparationSpec::reallocateInst(const HeapAssignment &asgn, const HeapAssignment::ReduxAUSet &aus, const HeapAssignment::ReduxDepAUSet depAUs)
 {
   bool modified = false;
 
   Preprocess &preprocess = getAnalysis< Preprocess >();
 
   std::set<const Value *> already;
-  for(HeapAssignment::ReduxAUSet::const_iterator i=aus.begin(), e=aus.end(); i!=e; ++i)
-  {
-    AU *au = i->first;
-    Reduction::Type redty = i->second;
-    if( au->type != AU_Stack && au->type != AU_Heap )
-      continue;
+  std::map<AU *, Value *> newAUs;
+  std::map<AU *, Value *> ausSize;
+  std::map<AU *, Value *> ausType;
+  bool notDone = true;
+  // iterate over all reduxAUs until all dependent redux objects, if any, are
+  // processed
+  while (notDone) {
+    notDone = false; // if no dependent redux then only one invocation needed
+    for (HeapAssignment::ReduxAUSet::const_iterator i = aus.begin(),
+                                                    e = aus.end();
+         i != e; ++i) {
+      AU *au = i->first;
+      Reduction::Type redty = i->second;
 
-    if( already.count( au->value ) )
-      continue;
-    already.insert( au->value );
-    Instruction *inst = const_cast< Instruction* >( dyn_cast< Instruction >( au->value ) );
-    assert( inst );
+      if (au->type != AU_Stack && au->type != AU_Heap)
+        continue;
 
-    DEBUG(errs() << "Dynamic AU: " << *inst << " ==> heap redux\n");
+      if (already.count(au->value))
+        continue;
 
-    Function *fcn = inst->getParent()->getParent();
-    InstInsertPt where = InstInsertPt::After(inst);
+      // if there is a redux that 'i' redux depends on, make sure it is already
+      // available, if not, process it first
+      Value *depSz;      // defaults to 0
+      Value *depAllocAU; // defaults to null
+      Value *depType;
+      depSz = ConstantInt::get(u32, 0);
+      Instruction *I =
+          const_cast<Instruction *>(dyn_cast<Instruction>(au->value));
+      assert(I);
+      LLVMContext &ctx = I->getModule()->getContext();
+      PointerType *voidptr = PointerType::getUnqual(Type::getInt8Ty(ctx));
+      depAllocAU = ConstantPointerNull::get(voidptr);
+      depType = ConstantInt::get(u8, 0);
 
-    // Determine size of allocation
-    Value *sz = determineSize(inst, where, inst);
-    Constant *subheap = ConstantInt::get(u8, asgn.getSubHeap(au));
+      auto f = depAUs.find(au);
+      if (f != depAUs.end()) {
+        AU *depAU = f->second.depAU;
+        if (!newAUs.count(depAU)) {
+          au = depAU;
+          redty = f->second.depType;
+          notDone = true; // process this in the next loop invocation
+        } else {
+          depSz = ausSize[depAU];
+          depAllocAU = newAUs[depAU];
+          depType = ausType[depAU];
+        }
+      }
 
-    // Add code to perform allocation
-    Constant *alloc = Api(mod).getAlloc( HeapAssignment::Redux );
-    Value *actuals[] = { sz, subheap, ConstantInt::get(u8, redty) };
-    Instruction *allocate = CallInst::Create(alloc, ArrayRef<Value*>(&actuals[0], &actuals[3]) );
-    where << allocate;
-    Value *newAU = allocate;
+      if (au->type != AU_Stack && au->type != AU_Heap)
+        continue;
 
-    if( newAU->getType() != inst->getType() )
-    {
-      Instruction *cast = new BitCastInst(newAU, inst->getType());
-      where << cast;
-      newAU = cast;
-    }
+      if (already.count(au->value))
+        continue;
 
-    // Replace old allocation
-    newAU->takeName(inst);
-    inst->replaceAllUsesWith(newAU);
-    preprocess.getRecovery().replaceAllUsesOfWith(inst,newAU);
-    inst->eraseFromParent();
+      already.insert(au->value);
+      Instruction *inst =
+          const_cast<Instruction *>(dyn_cast<Instruction>(au->value));
+      assert(inst);
 
-    // Manually free stack variables
-    if( au->type == AU_Stack )
-    {
-      // At each function exit (return, unwind, or unreachable...)
-      for(Function::iterator j=fcn->begin(), z=fcn->end(); j!=z; ++j)
-      {
-        BasicBlock *bb = &*j;
-        TerminatorInst *term = bb->getTerminator();
-        InstInsertPt where;
-        if( isa<ReturnInst>(term) )
-          where = InstInsertPt::Before(term);
+      DEBUG(errs() << "Dynamic AU: " << *inst << " ==> heap redux\n");
 
-        else if( isa<UnreachableInst>(term) )
-        {
-          where = InstInsertPt::Before(term);
+      Function *fcn = inst->getParent()->getParent();
+      InstInsertPt where = InstInsertPt::After(inst);
+      if (depAUs.find(au) != depAUs.end()) {
+        Instruction *depAllocAUI = dyn_cast<Instruction>(depAllocAU);
+        assert(depAllocAUI);
+        where = InstInsertPt::After(depAllocAUI);
+      }
 
-          // This unreachable terminator is probably prededed by
-          // a call to a noreturn function...
-          for(BasicBlock::iterator k=bb->begin(); k!=bb->end(); ++k)
-          {
-            CallSite cs = getCallSite( &*k );
-            if( !cs.getInstruction() )
-              continue;
+      // Determine size of allocation
+      Value *sz = determineSize(inst, where, inst);
+      Constant *subheap = ConstantInt::get(u8, asgn.getSubHeap(au));
 
-            if( cs.doesNotReturn() )
-            {
-              where = InstInsertPt::Before( cs.getInstruction() );
-              break;
+      // Add code to perform allocation
+      Constant *alloc = Api(mod).getAlloc(HeapAssignment::Redux);
+      Value *actuals[] = {sz,         subheap, ConstantInt::get(u8, redty),
+                          depAllocAU, depSz,   depType};
+      Instruction *allocate =
+          CallInst::Create(alloc, ArrayRef<Value *>(&actuals[0], &actuals[6]));
+      where << allocate;
+      Value *newAU = allocate;
+
+      newAUs[au] = newAU;
+      ausSize[au] = sz;
+      PointerType *pty = dyn_cast<PointerType>(inst->getType());
+      assert(pty && "Alloc inst not a pointer?!");
+      if (pty->getElementType()->isPointerTy())
+        ausType[au] = ConstantInt::get(u8, 0);
+      else if (pty->getElementType()->isIntegerTy())
+        ausType[au] = ConstantInt::get(u8, 1);
+      else if (pty->getElementType()->isFloatingPointTy())
+        ausType[au] = ConstantInt::get(u8, 2);
+      else
+        assert(0 && "Not yet implemented");
+
+      if (newAU->getType() != inst->getType()) {
+        Instruction *cast = new BitCastInst(newAU, inst->getType());
+        where << cast;
+        newAU = cast;
+      }
+
+      // Replace old allocation
+      newAU->takeName(inst);
+      inst->replaceAllUsesWith(newAU);
+      preprocess.getRecovery().replaceAllUsesOfWith(inst, newAU);
+      inst->eraseFromParent();
+
+      // Manually free stack variables
+      if (au->type == AU_Stack) {
+        // At each function exit (return, unwind, or unreachable...)
+        for (Function::iterator j = fcn->begin(), z = fcn->end(); j != z; ++j) {
+          BasicBlock *bb = &*j;
+          TerminatorInst *term = bb->getTerminator();
+          InstInsertPt where;
+          if (isa<ReturnInst>(term))
+            where = InstInsertPt::Before(term);
+
+          else if (isa<UnreachableInst>(term)) {
+            where = InstInsertPt::Before(term);
+
+            // This unreachable terminator is probably prededed by
+            // a call to a noreturn function...
+            for (BasicBlock::iterator k = bb->begin(); k != bb->end(); ++k) {
+              CallSite cs = getCallSite(&*k);
+              if (!cs.getInstruction())
+                continue;
+
+              if (cs.doesNotReturn()) {
+                where = InstInsertPt::Before(cs.getInstruction());
+                break;
+              }
             }
           }
+
+          else
+            continue;
+
+          // Free the allocation
+          Constant *free = Api(mod).getFree(HeapAssignment::Redux);
+          where << CallInst::Create(free, allocate);
         }
-
-        else
-          continue;
-
-        // Free the allocation
-        Constant *free = Api(mod).getFree( HeapAssignment::Redux );
-        where << CallInst::Create(free, allocate);
       }
     }
 
@@ -1108,7 +1169,7 @@ bool ApplySeparationSpec::reallocateDynamicAUs()
   modified |= reallocateInst(asgn, asgn.getPrivateAUs(),  HeapAssignment::Private );
   modified |= reallocateInst(asgn, asgn.getReadOnlyAUs(), HeapAssignment::ReadOnly );
 
-  modified |= reallocateInst(asgn, asgn.getReductionAUs() );
+  modified |= reallocateInst(asgn, asgn.getReductionAUs(), asgn.getReduxDepAUs());
 
   return modified;
 }

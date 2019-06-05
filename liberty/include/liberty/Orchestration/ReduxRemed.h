@@ -18,6 +18,8 @@
 
 #include <unordered_set>
 
+#define DEFAULT_REDUX_REMED_COST 2
+
 namespace liberty
 {
 
@@ -26,8 +28,14 @@ using namespace SpecPriv;
 
 class ReduxRemedy : public Remedy {
 public:
-  const Instruction *reduxI;
+  const Instruction *liveOutV;
+  Reduction::Type type;
   const SCC *reduxSCC;
+
+  // Min/max reductions could depend on comparison of another inst
+  const Instruction *depInst;
+  Reduction::Type depType;
+  const Instruction *depUpdateInst;
 
   void apply(Task *task);
   bool compare(const Remedy_ptr rhs) const;

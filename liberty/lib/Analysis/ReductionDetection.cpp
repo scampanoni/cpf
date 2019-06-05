@@ -58,14 +58,31 @@ Instruction* findAddInstDefForPHI(const PHINode *src, const Instruction *dst)
   return aInst;
 }
 
-bool ReductionDetection::isSumReduction(const Loop *loop, const Instruction *src,
+Instruction* getAddInstDefForPHI(const PHINode *src)
+{
+  if (src->getNumIncomingValues() != 1)
+    return NULL;
+
+  Value *Op1 = src->getIncomingValue(0);
+  Instruction *ii1 = dyn_cast<Instruction>(Op1);
+
+  if (ii1 && isAddInst(ii1))
+    return ii1;
+
+  return NULL;
+}
+
+bool ReductionDetection::isSumReduction(const Loop *loop,
+                                        const Instruction *src,
                                         const Instruction *dst,
-                                        const bool loopCarried) {
-  DEBUG(errs() << "Testing PDG Edge for sum reduction: " << *src << " -> " << *dst << "\n");
+                                        const bool loopCarried,
+                                        SpecPriv::Reduction::Type &type) {
+  DEBUG(errs() << "Testing PDG Edge for sum reduction: " << *src << " -> "
+               << *dst << "\n");
   if (!src || !dst)
     return false;
 
-  PHINode *IndVar = loop->getCanonicalInductionVariable();
+  const PHINode *IndVar = loop->getCanonicalInductionVariable();
   if (IndVar && dst == IndVar)
     return false;
 
@@ -74,7 +91,8 @@ bool ReductionDetection::isSumReduction(const Loop *loop, const Instruction *src
   // x0 = phi(initial from outside loop, x1 from backedge)
   // tmp = add x0, ...
   // x1 = phi(x0 from loop header, tmp from ...)
-  Instruction *addInst = NULL;
+  const Instruction *addInst = NULL;
+  bool isSumRedux = false;
   if (dst->getOpcode() == Instruction::PHI &&
       dst->getParent() == loop->getHeader() && loopCarried &&
       src->getOpcode() == Instruction::PHI &&
@@ -83,8 +101,25 @@ bool ReductionDetection::isSumReduction(const Loop *loop, const Instruction *src
     DEBUG(errs() << "\nSum Reduction:Found edge: " << *src << "\n            "
                  << *dst << "\naddInst: " << *addInst
                  << "\naccumValue: " << *dst << "\n");
-    return true;
+
+    isSumRedux = true;
   }
+
+// Pattern 0:
+// x0 = phi(initial from outside loop, x1 from backedge)
+// tmp = add x0, ...
+// x1 = phi(tmp from ...)
+  else if (dst->getOpcode() == Instruction::PHI &&
+    dst->getParent() == loop->getHeader() && loopCarried &&
+    src->getOpcode() == Instruction::PHI &&
+    (addInst = getAddInstDefForPHI(dyn_cast<PHINode>(src))) &&
+    (isDefUseForPHI(dyn_cast<PHINode>(dst), addInst))) {
+   DEBUG(errs() << "\nSum Reduction:Found edge: " << *src << "\n            "
+               << *dst << "\naddInst: " << *addInst << "\naccumValue: " << *dst
+               << "\n");
+    isSumRedux = true;
+  }
+
   // Pattern 2:
   // x0 = phi(initial from outside loop, x1 from backedge)
   // x1 = add x0, ...
@@ -94,8 +129,11 @@ bool ReductionDetection::isSumReduction(const Loop *loop, const Instruction *src
     DEBUG(errs() << "\nSum Reduction:Found edge: " << *src << "\n            "
                  << *dst << "\naddInst: " << *src << "\naccumValue: " << *dst
                  << "\n");
-    return true;
+    addInst = src;
+    isSumRedux = true;
   }
+  /*
+  // only looking for loopcarried
   // Pattern 2:
   // x0 = phi(initial from outside loop, x1 from backedge)
   // x1 = add x0, ...
@@ -107,6 +145,7 @@ bool ReductionDetection::isSumReduction(const Loop *loop, const Instruction *src
                  << "\n");
     return true;
   }
+  */
 
   // This pattern corresponds to a sum-reduction in an inner
   // loop, e.g.
@@ -171,6 +210,13 @@ bool ReductionDetection::isSumReduction(const Loop *loop, const Instruction *src
     }
   }
 
+  if (isSumRedux && addInst) {
+    const BinaryOperator *binop = dyn_cast<BinaryOperator>(addInst);
+    if (binop)
+      type = SpecPriv::Reduction::isAssocAndCommut(binop);
+    return true;
+  }
+
   DEBUG(errs() << "\t- Finishing sum reduction check. Not found\n");
   return false;
 }
@@ -181,7 +227,9 @@ bool ReductionDetection::isSumReduction(const Loop *loop, const Instruction *src
 // as the cmp.
 bool findDependenceCycle(
     const Instruction *src, const Instruction *dst, bool &isFirstOperand,
-    std::unordered_set<const Instruction *> &minMaxReductions, Loop *loop) {
+    std::unordered_map<const Instruction *, MinMaxReductionInfo *>
+        &minMaxReductions,
+    Loop *loop) {
 
   // DEBUG(errs() << "findDependenceCycle called: src: " << *src << "\n\tdst: "
   // << *dst << "\n");
@@ -267,18 +315,68 @@ bool findDependenceCycle(
 return false;
 } // namespace liberty
 
+Reduction::Type getDependentType(const Instruction *I,
+                                 Reduction::Type depType) {
+  if (depType == Reduction::Max_f32 || depType == Reduction::Max_f64 ||
+      depType == Reduction::Max_i32 || depType == Reduction::Max_i64) {
+    if (I->getType()->isIntegerTy(8))
+      return Reduction::Max_i8;
+    else if( I->getType()->isIntegerTy(16) )
+      return Reduction::Max_i16;
+    else if( I->getType()->isIntegerTy(32) )
+      return Reduction::Max_i32;
+    else if( I->getType()->isIntegerTy(64) )
+      return Reduction::Max_i64;
+    else if( I->getType()->isFloatTy() )
+      return Reduction::Max_f32;
+    else if( I->getType()->isDoubleTy() )
+      return Reduction::Max_f64;
+    else if( I->getType()->isPointerTy() )
+      return Reduction::Max_u64;
+    else {
+      assert(0 && "Not yet implemented case for dependent type");
+      return Reduction::NotReduction;
+    }
+  } else if (depType == Reduction::Min_f32 || depType == Reduction::Min_f64 ||
+             depType == Reduction::Min_i32 || depType == Reduction::Min_i64) {
+    if (I->getType()->isIntegerTy(8))
+      return Reduction::Min_i8;
+    else if (I->getType()->isIntegerTy(16))
+      return Reduction::Min_i16;
+    else if (I->getType()->isIntegerTy(32))
+      return Reduction::Min_i32;
+    else if (I->getType()->isIntegerTy(64))
+      return Reduction::Min_i64;
+    else if (I->getType()->isFloatTy())
+      return Reduction::Min_f32;
+    else if (I->getType()->isDoubleTy())
+      return Reduction::Min_f64;
+    else if( I->getType()->isPointerTy() )
+      return Reduction::Min_u64;
+    else {
+      assert(0 && "Not yet implemented case for dependent type");
+      return Reduction::NotReduction;
+    }
+  } else {
+    assert(0 && "Not yet implemented case for dependent type");
+    return Reduction::NotReduction;
+  }
+}
+
 // This function should be called on all selects (could be extented for PHIs for
 // branch min/max) in the same basic block as the dst of the reduction edge.
-void sameBBMinMaxRedux(
+bool sameBBMinMaxRedux(
     const Instruction *dst, MinMaxReductionInfo *info,
-    std::unordered_set<const Instruction *> &minMaxReductions, Loop *loop) {
+    std::unordered_map<const Instruction *, MinMaxReductionInfo *>
+        &minMaxReductions,
+    Loop *loop, bool isMinMaxV) {
 
   // DEBUG(errs() << "findDependenceCycle called: src: " << *src << "\n\tdst: "
   // << *dst << "\n");
 
   const SelectInst *sel = dyn_cast<SelectInst>(dst);
   if (!sel || sel->getCondition() != info->cmpInst)
-    return;
+    return false;
 
   std::vector<const Instruction *> stack;
   stack.push_back(dst);
@@ -303,7 +401,7 @@ void sameBBMinMaxRedux(
 
     if (!isa<PHINode>(inst) && inst != dst ) {
       DEBUG(errs() << "Shouldn't have a non-PHI use: " << *inst << "\n");
-      return;
+      return false;
     }
 
     for (Value::const_user_iterator U = inst->user_begin(), E = inst->user_end(); U != E;
@@ -311,12 +409,12 @@ void sameBBMinMaxRedux(
       const Instruction *user = dyn_cast<Instruction>(*U);
       if (!user) {
         DEBUG(errs() << "User is not an instruction\n");
-        return;
+        return false;
       }
       if (!visited.count(user)) {
         stack.push_back(user);
 
-        if (info && inst->hasOneUse() && user->getParent() == loop->getHeader())
+        if (info && inst->getParent() == loop->getHeader())
           liveOutV = inst;
       } else if (user == dst)
         depCycleCompleted = true;
@@ -325,8 +423,28 @@ void sameBBMinMaxRedux(
 
   if (liveOutV && depCycleCompleted) {
     DEBUG(errs() << "MinMax redux for " << *liveOutV << "\n");
-    minMaxReductions.insert(liveOutV);
+
+    if (isMinMaxV) {
+      info->minMaxInst = liveOutV;
+      info->type = SpecPriv::Reduction::isAssocAndCommut(info->cmpInst);
+      info->depInst = nullptr;
+      info->depType = Reduction::NotReduction;
+      info->depUpdateInst = nullptr;
+      minMaxReductions[liveOutV] = info;
+    } else {
+      MinMaxReductionInfo *newinfo = new MinMaxReductionInfo;
+      newinfo->depInst = info->minMaxInst;
+      newinfo->depType = info->type;
+      newinfo->type = getDependentType(liveOutV, newinfo->depType);
+      const Instruction *depUpdateInst = dyn_cast<Instruction>(info->minMaxValue);
+      assert(depUpdateInst);
+      newinfo->depUpdateInst = depUpdateInst;
+      minMaxReductions[liveOutV] = newinfo;
+    }
+
+    return true;
   }
+  return false;
 }
 
 // Find a candidate edge.  This can be a control dependence edge from branch
@@ -334,7 +452,8 @@ void sameBBMinMaxRedux(
 MinMaxReductionInfo *
 areCandidateInsts(const Instruction *src, const Instruction *dst,
                   const bool controlDep, PDG *pdg,
-                  std::unordered_set<const Instruction *> &minMaxReductions,
+                  std::unordered_map<const Instruction *, MinMaxReductionInfo *>
+                      &minMaxReductions,
                   Loop *loop) {
 
   if (!src || !dst)
@@ -450,15 +569,21 @@ areCandidateInsts(const Instruction *src, const Instruction *dst,
   return NULL;
 }
 
-bool ReductionDetection::isMinMaxReduction(const Loop *loop,
-                                           const Instruction *src,
-                                           const Instruction *dst,
-                                           const bool loopCarried) {
+bool ReductionDetection::isMinMaxReduction(
+    const Loop *loop, const Instruction *src, const Instruction *dst,
+    const bool loopCarried, SpecPriv::Reduction::Type &type,
+    const Instruction **depInst, SpecPriv::Reduction::Type &depType,
+    const Instruction **depUpdateInst) {
   DEBUG(errs() << "Testing PDG Edge for min/max reduction: " << *src << " -> "
                << *dst << "\n";);
 
-  if (minMaxReductions.count(src) && loopCarried)
+  if (minMaxReductions.count(dst) && loopCarried) {
+    type = minMaxReductions[dst]->type;
+    *depInst = minMaxReductions[dst]->depInst;
+    depType = minMaxReductions[dst]->depType;
+    *depUpdateInst = minMaxReductions[dst]->depUpdateInst;
     return true;
+  }
 
   return false;
 }
@@ -493,7 +618,8 @@ void ReductionDetection::findMinMaxRegReductions(Loop *loop, PDG *pdg) {
                    << "\n      dst = " << *dst << "\n");
 
       // MIN/MAX Reduction Candidate!!
-
+      bool infoUsed = false;
+      infoUsed |= sameBBMinMaxRedux(dst, info, minMaxReductions, loop, true);
       // Detect edges corresponding to other reduction live-outs
       BasicBlock *bb = dst->getParent();
       for (BasicBlock::iterator bi = bb->begin(), ei = bb->end(); bi != ei;
@@ -503,12 +629,13 @@ void ReductionDetection::findMinMaxRegReductions(Loop *loop, PDG *pdg) {
         // NOTE: Should selects be more restrictive (i.e. only allowed if
         // original min/max used a select with the same condition?)
         //if (isa<PHINode>(itmp) || isa<SelectInst>(itmp)) {
-        if (isa<SelectInst>(itmp) && itmp != src) {
-          errs() << "Same BB inst: " << *itmp << "\n";
-          sameBBMinMaxRedux(itmp, info, minMaxReductions, loop);
+        if (isa<SelectInst>(itmp) && itmp != src && itmp != dst) {
+          infoUsed |=
+              sameBBMinMaxRedux(itmp, info, minMaxReductions, loop, false);
         }
       }
-      delete info;
+      if (!infoUsed)
+        delete info;
     }
   }
   DEBUG(errs() << "\t- Finishing min/max reduction check.\n");

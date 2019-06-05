@@ -405,7 +405,13 @@ struct Api
   Constant *getEndIter()
   {
     std::string name = (Twine(personality) + "_end_iter").str();
-    return mod->getOrInsertFunction(name, fv2v);
+    return mod->getOrInsertFunction(name, fi2v);
+  }
+
+   Constant *getSetLastReduxUpIter()
+  {
+    std::string name = (Twine(personality) + "_set_last_redux_update_iter").str();
+    return mod->getOrInsertFunction(name, fi2v);
   }
 
 
@@ -1081,10 +1087,13 @@ private:
 
   Constant *getAllocRedux()
   {
-    std::vector<Type*> formals(3);
+    std::vector<Type*> formals(6);
     formals[0] = u32; // size
     formals[1] = u8;  // sub-heap
     formals[2] = u8;  // redux type
+    formals[3] = voidptr; // dep au
+    formals[4] = u32; // dep size
+    formals[5] = u8; // dep size
 
     FunctionType *fty = FunctionType::get(voidptr, formals, false);
     std::string name = (Twine(personality) + "_alloc_redux").str();
