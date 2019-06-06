@@ -5,6 +5,8 @@
 #include <unordered_set>
 #include <climits>
 
+#define OffPStagePercThreshold 3
+
 namespace liberty {
 using namespace llvm;
 
@@ -680,7 +682,6 @@ unsigned long PSDSWPCritic::moveOffStage(
     unordered_set<DGEdge<Value> *> &edgesNotRemoved, EdgeWeight offPStageWeight,
     const EdgeWeight &parallelStageWeight, bool moveToFront) {
   // percentage of weight moved off the parallel stage
-  unsigned OffPStagePercThreshold = 0.03;
   EdgeWeight extraOffPStageWeight = 0;
   while (!worklist.empty()) {
     Instruction *inst = worklist.front();
@@ -741,6 +742,10 @@ bool PSDSWPCritic::avoidElimDep(const PDG &pdg, PipelineStrategy &ps,
                                 unordered_set<DGEdge<Value> *> &edgesNotRemoved,
                                 EdgeWeight &offPStageWeight,
                                 const EdgeWeight &parallelStageWeight) {
+
+  // check if we surpassed the threshold of offPStage movement already
+  if ((offPStageWeight * 100.0) / parallelStageWeight > OffPStagePercThreshold)
+    return false;
 
   unsigned costThreshold = 5;
   if (edge->getMinRemovalCost() <= costThreshold)
@@ -828,12 +833,12 @@ bool PSDSWPCritic::avoidElimDep(const PDG &pdg, PipelineStrategy &ps,
 void PSDSWPCritic::critForPipelineProperty(
     const PDG &pdg, const PipelineStage &earlyStage,
     const PipelineStage &lateStage, Criticisms &criticisms,
-    PipelineStrategy &ps, const EdgeWeight parallelStageWeight) {
+    PipelineStrategy &ps, EdgeWeight &offPStageWeight,
+    const EdgeWeight parallelStageWeight) {
 
   unordered_set<Instruction *> instsMovedToFront;
   unordered_set<Instruction *> instsMovedToBack;
   unordered_set<DGEdge<Value> *> edgesNotRemoved;
-  EdgeWeight offPStageWeight = 0;
 
   PipelineStage::ISet all_early = earlyStage.instructions;
   all_early.insert(earlyStage.replicated.begin(), earlyStage.replicated.end());
@@ -901,12 +906,12 @@ void PSDSWPCritic::critForPipelineProperty(
 // There should be no loop-carried edges within 'parallel' stage
 void PSDSWPCritic::critForParallelStageProperty(
     const PDG &pdg, const PipelineStage &parallel, Criticisms &criticisms,
-    PipelineStrategy &ps, const EdgeWeight parallelStageWeight) {
+    PipelineStrategy &ps, EdgeWeight &offPStageWeight,
+    const EdgeWeight parallelStageWeight) {
 
   unordered_set<Instruction *> instsMovedToFront;
   unordered_set<Instruction *> instsMovedToBack;
   unordered_set<DGEdge<Value> *> edgesNotRemoved;
-  EdgeWeight offPStageWeight = 0;
 
   for (PipelineStage::ISet::const_iterator i = parallel.instructions.begin(),
                                            e = parallel.instructions.end();
@@ -976,7 +981,8 @@ EdgeWeight PSDSWPCritic::getParalleStageWeight(PipelineStrategy &ps) {
   }
 }
 
-void PSDSWPCritic::adjustPipeline(PipelineStrategy &ps, PDG &pdg) {
+void PSDSWPCritic::adjustPipeline(PipelineStrategy &ps, PDG &pdg,
+                                  EdgeWeight &offPStageWeight) {
   // Foreach parallel stage
   // if there is a loop-carried reg dep from a seq stage to parallel stage, then
   // the destination of this dep needs to be moved to the sequential stage. The
@@ -1037,7 +1043,8 @@ void PSDSWPCritic::adjustPipeline(PipelineStrategy &ps, PDG &pdg) {
 }
 
 void PSDSWPCritic::populateCriticisms(PipelineStrategy &ps,
-                                      Criticisms &criticisms, PDG &pdg) {
+                                      Criticisms &criticisms, PDG &pdg,
+                                      EdgeWeight &offPStageWeight) {
   // Add to criticisms all deps which violate pipeline order.
 
   EdgeWeight parallelStageWeight = getParalleStageWeight(ps);
@@ -1049,8 +1056,8 @@ void PSDSWPCritic::populateCriticisms(PipelineStrategy &ps,
     const PipelineStage &earlier = *i;
     for (PipelineStrategy::Stages::const_iterator j = i + 1; j != e; ++j) {
       const PipelineStage &later = *j;
-      critForPipelineProperty(pdg, earlier, later, criticisms,
-                              ps, parallelStageWeight);
+      critForPipelineProperty(pdg, earlier, later, criticisms, ps,
+                              offPStageWeight, parallelStageWeight);
     }
   }
 
@@ -1067,7 +1074,7 @@ void PSDSWPCritic::populateCriticisms(PipelineStrategy &ps,
     // assert that no instruction in this stage
     // is incident on a loop-carried edge.
 
-    critForParallelStageProperty(pdg, pstage, criticisms, ps,
+    critForParallelStageProperty(pdg, pstage, criticisms, ps, offPStageWeight,
                                  parallelStageWeight);
   }
 }
@@ -1098,9 +1105,11 @@ CriticRes PSDSWPCritic::getCriticisms(PDG &pdg, Loop *loop,
     return res;
   }
 
-  adjustPipeline(*ps, pdg);
+  EdgeWeight offPStageWeight = 0;
 
-  populateCriticisms(*ps, res.criticisms, pdg);
+  adjustPipeline(*ps, pdg, offPStageWeight);
+
+  populateCriticisms(*ps, res.criticisms, pdg, offPStageWeight);
 
   ps->setValidFor(loop->getHeader());
   ps->assertConsistentWithIR(loop);
