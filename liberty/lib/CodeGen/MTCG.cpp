@@ -49,8 +49,10 @@ void MTCG::getAnalysisUsage(AnalysisUsage &au) const
 bool MTCG::runOnModule(Module &module)
 {
   bool modified = false;
-  const Selector &selector = getAnalysis< Selector >();
+  Selector &selector = getAnalysis< Selector >();
   ModuleLoops &mloops = getAnalysis< ModuleLoops >();
+  perf = selector.getProfilePerformanceEstimator();
+  assert(perf);
 
   // Study each of the strategies, and then create the stage functions
   for(Selector::strat_iterator i=selector.strat_begin(), e=selector.strat_end(); i!=e; ++i)
@@ -62,14 +64,18 @@ bool MTCG::runOnModule(Module &module)
     if( PipelineStrategy *ps = dyn_cast<PipelineStrategy>(&*(i->second)) )
     {
       // PHASE 1 ----------- PLANNING
-      elaboratedStrategies.push_back( PreparedStrategy(loop,ps) );
+      elaboratedStrategies.push_back( PreparedStrategy(loop,ps,perf) );
       PreparedStrategy &strategy = elaboratedStrategies.back();
 
       if( WriteStageCFGs )
+      {
         for(unsigned stageno=0, N=strategy.numStages(); stageno<N; ++stageno)
+        {
           writeStageCFG(strategy.loop, stageno, "on",
             strategy.relevant[stageno], strategy.instructions[stageno],
             strategy.produces[stageno], strategy.consumes[stageno]);
+        }
+      }
 
       // PHASE 2 ------------ CREATE STAGES
       if( runOnStrategy(strategy) )
@@ -135,6 +141,8 @@ Function *MTCG::createStage(PreparedStrategy &strategy, unsigned stageno, const 
   const PipelineStrategy::CrossStageDependences &xdeps = strategy.lps->crossStageDeps;
   const unsigned N = stages.size();
 
+  strategy.lps->stages[stageno].stageno = stageno;
+
   ++numStagesCreated;
 
   // Maintain a correspondence between original and new blocks/args/instructions/liveins etc.
@@ -172,7 +180,7 @@ Function *MTCG::createStage(PreparedStrategy &strategy, unsigned stageno, const 
   BasicBlock *entry = &fcn->getEntryBlock();
   BranchInst::Create( preheader, entry );
 
-  markIterationBoundaries(preheader, stage);
+  markIterationBoundaries(preheader, stage, stage2queue, N);
 
 #if (MTCG_CTRL_DEBUG || MTCG_VALUE_DEBUG)
   Module *mod = fcn->getParent();
@@ -578,19 +586,16 @@ BasicBlock *MTCG::createOffIteration(
   PreparedStrategy::ConsumeFrom off_cons;
   PreparedStrategy::ProduceTo off_prods;
 
-  PreparedStrategy::studyStage(
-    stages,xdeps,
-    liveIns, available,
-    stageno, loop,
-    off_insts,off_avail,off_rel,off_cons);
+  PreparedStrategy::studyStage(stages, xdeps, liveIns, available, stageno, loop,
+                               perf, off_insts, off_avail, off_rel, off_cons);
 
-/* Removing this unnecessary restriction.  Instead, we need a new variant of
- * the produce/consume operations which are specialized for the case where the
- * consume occurs in a replicable stage. -NPJ.
+  /* Removing this unnecessary restriction.  Instead, we need a new variant of
+   * the produce/consume operations which are specialized for the case where the
+   * consume occurs in a replicable stage. -NPJ.
 
-  assert( off_cons.empty()
-  && "Replicated off-iterations should not consume");
-*/
+    assert( off_cons.empty()
+    && "Replicated off-iterations should not consume");
+  */
   DEBUG(errs() << "OFF-iteration of stage " << stageno << " has "
                << off_insts.size() << " instructions; "
                << off_rel.size() << " basic blocks; consumes "
@@ -1344,7 +1349,11 @@ ControlSpeculation::LoopBlock MTCG::closestRelevantDom(BasicBlock *bb, const BBS
 }
 
 void MTCG::markIterationBoundaries(BasicBlock *preheader,
-                                   const PipelineStage &stage) {
+                                   const PipelineStage &stage,
+                                   const Stage2Value &stage2queue,
+                                   const int num_stages) {
+  Selector &selector = getAnalysis<Selector>();
+  const HeapAssignment &heaps = selector.getAssignment();
   Function *fcn = preheader->getParent();
   Module *mod = fcn->getParent();
   Api api(mod);
@@ -1354,6 +1363,12 @@ void MTCG::markIterationBoundaries(BasicBlock *preheader,
   BasicBlock *header = preheader->getTerminator()->getSuccessor(0);
   Constant *enditer = api.getEndIter();
   Constant *ckptcheck = api.getCkptCheck();
+  Constant *get_locals = api.getNumLocals();
+  Constant *add_locals = api.getAddNumLocals();
+  Constant *get_loopid = api.getGetLoopID();
+  Constant *prod = api.getProduce();
+  Constant *cons = api.getConsume();
+  std::vector<Value*> args;
 
   // Call begin iter at top of loop
   CallInst::Create( api.getBeginIter(), "", &*( header->getFirstInsertionPt() ) );
@@ -1421,6 +1436,34 @@ void MTCG::markIterationBoundaries(BasicBlock *preheader,
       }
       term->setSuccessor(sn, split);
       split->moveAfter(source);
+
+      // if no locals then don't add produce/consume calls
+      if ( !heaps.getLocalAUs().empty() )
+      {
+        DEBUG( errs() << "Adding produces for local AUs" );
+        // add consumes if not first stage
+        if ( stage.stageno != 0 )
+        {
+          // XXX need to get correct queue somehow
+          Instruction *loop_id = CallInst::Create( get_loopid, "", split );
+          args.clear();
+          args.push_back(stage2queue[stage.stageno]);
+          Instruction *prev_locals =
+              CallInst::Create(cons, ArrayRef<Value *>(args), "", split);
+          CallInst::Create( add_locals, ArrayRef<Value *>(prev_locals), "", split );
+          Instruction *num_locals = CallInst::Create( get_locals );
+        }
+        // add produces if not last stage
+        if ( stage.stageno != num_stages-1 )
+        {
+          Instruction *num_locals = CallInst::Create( get_locals );
+          args.clear();
+          args.push_back(stage2queue[stage.stageno]); // probably incorrect
+          args.push_back(num_locals);
+          Instruction *prev_locals =
+              CallInst::Create(prod, ArrayRef<Value *>(args), "", split);
+        }
+      }
 
       CallInst::Create(enditer, ConstantInt::get(u32, ckptNeeded), "", split);
       BranchInst::Create(dest, split);

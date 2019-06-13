@@ -386,6 +386,18 @@ struct Api
     return mod->getOrInsertFunction(name, fv2i);
   }
 
+  Constant *getSetLoopID()
+  {
+    std::string name = (Twine(personality) + "_set_loopID").str();
+    return mod->getOrInsertFunction(name, fi2v);
+  }
+
+  Constant *getGetLoopID()
+  {
+    std::string name = (Twine(personality) + "_get_loopID").str();
+    return mod->getOrInsertFunction(name, fv2i);
+  }
+
   Constant *getBeginInvocation()
   {
     std::string name = (Twine(personality) + "_begin_invocation").str();
@@ -414,6 +426,17 @@ struct Api
     return mod->getOrInsertFunction(name, fi2v);
   }
 
+  Constant *getNumLocals()
+  {
+    std::string name = (Twine(personality) + "_num_local").str();
+    return mod->getOrInsertFunction(name, fv2i);
+  }
+
+  Constant *getAddNumLocals()
+  {
+    std::string name = (Twine(personality) + "_add_num_local").str();
+    return mod->getOrInsertFunction(name, fi2v);
+  }
 
   Constant *getBegin()
   {
@@ -469,6 +492,12 @@ struct Api
     return mod->getOrInsertFunction(name, fqi2v);
   }
 
+  Constant *getProduceLocal()
+  {
+    std::string name = (Twine(personality) + "_produce_locals").str();
+    return mod->getOrInsertFunction(name, fq2v);
+  }
+
   Constant *getFlushQueue()
   {
     std::string name = (Twine(personality) + "_flush").str();
@@ -481,11 +510,16 @@ struct Api
     return mod->getOrInsertFunction(name, fq2v);
   }
 
-
   Constant *getConsume()
   {
     std::string name = (Twine(personality) + "_consume").str();
     return mod->getOrInsertFunction(name, fq2i);
+  }
+
+  Constant *getConsumeLocal()
+  {
+    std::string name = (Twine(personality) + "_consume_locals").str();
+    return mod->getOrInsertFunction(name, fq2v);
   }
 
   Constant *getProduceToReplicated()
