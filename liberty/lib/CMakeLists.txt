@@ -1,3 +1,4 @@
+add_subdirectory(SPICE)
 add_subdirectory(SLAMP)
 add_subdirectory(LAMP)
 add_subdirectory(Analysis)
