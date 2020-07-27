@@ -12,15 +12,8 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
-
-#include "llvm/ADT/iterator_range.h"
-
-#include "liberty/Analysis/LLVMAAResults.h"
 #include "liberty/SPICE/Spice.hpp"
-#include "liberty/Strategy/ProfilePerformanceEstimator.h"
 
-#include "Assumptions.h"
-#include "Noelle.hpp"
 
 using namespace llvm;
 using namespace liberty;
@@ -44,8 +37,11 @@ using namespace spice;
 }*/
 
 bool Spice::runOnModule (Module &M){
-  auto& noelle = getAnalysis<Noelle>();
-  errs() << "The program has " << noelle.numberOfProgramInstructions() << " instructions\n";
+  for (Module::iterator func = M.begin(), func_end = M.end(); func != func_end; ++func)
+      for (Function::iterator bb = func->begin(), bb_end = func->end(); bb != bb_end; ++bb)
+          for (BasicBlock::iterator inst = bb->begin(), inst_end = bb->end(); inst != inst_end; inst++)
+              if(inst->getMetadata("note.noelle"))
+                errs() << *inst << "\n";
   return false;
 }
 
