@@ -36,7 +36,10 @@ public:
   static char ID;
   Spice() : ModulePass(ID) {}
   virtual ~Spice() {}
-
+  void getAnalysisUsage(AnalysisUsage &au) const
+  {
+    au.addRequired< ModuleLoops > ();
+  }
   //void getAnalysisUsage(AnalysisUsage &AU) const override;
   bool runOnModule(Module &M) override;
 

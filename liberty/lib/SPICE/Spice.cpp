@@ -1,3 +1,6 @@
+/*TODOs:
+ * Identify loop using metadata, match that with a loop in noelle
+ */
 #define DEBUG_TYPE "pdgbuilder"
 
 #include "llvm/Analysis/LoopInfo.h"
@@ -13,7 +16,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "liberty/SPICE/Spice.hpp"
-
+#include "liberty/LoopProf/Targets.h"
+#include "liberty/Utilities/ModuleLoops.h"
 
 using namespace llvm;
 using namespace liberty;
@@ -36,12 +40,23 @@ using namespace spice;
   AU.setPreservesAll();
 }*/
 
+/*static cl::opt<std::string> ExplicitTargetFcn(
+  "target-fcn", cl::init(""), cl::NotHidden,
+  cl::desc("Explicit Target Function"));*/
+
 bool Spice::runOnModule (Module &M){
-  for (Module::iterator func = M.begin(), func_end = M.end(); func != func_end; ++func)
+  ModuleLoops &mloops = getAnalysis< ModuleLoops >();
+  //const Targets &targets = getAnalysis< Targets >();
+  //for(Targets::iterator i=targets.begin(mloops), e=targets.end(mloops); i!=e; ++i)
+  //{
+  //  Loop *loop = *i;
+  //  loop->dump();
+  //}
+ /* for (Module::iterator func = M.begin(), func_end = M.end(); func != func_end; ++func)
       for (Function::iterator bb = func->begin(), bb_end = func->end(); bb != bb_end; ++bb)
           for (BasicBlock::iterator inst = bb->begin(), inst_end = bb->end(); inst != inst_end; inst++)
               if(inst->getMetadata("note.noelle"))
-                errs() << *inst << "\n";
+                errs() << *inst << "\n";*/
   return false;
 }
 
