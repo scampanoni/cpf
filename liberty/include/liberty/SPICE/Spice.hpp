@@ -1,3 +1,6 @@
+#ifndef LLVM_LIBERTY_SPICE_MTCG_H
+#define LLVM_LIBERTY_SPICE_MTCG_H
+
 #include "llvm/Pass.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Instructions.h"
@@ -20,7 +23,7 @@
 #include "liberty/Speculation/LoopDominators.h"
 #include "liberty/Speculation/PredictionSpeculator.h"
 #include "liberty/Speculation/Read.h"
-
+#include "liberty/LoopProf/Targets.h"
 #include "PDG.hpp"
 
 #include <unordered_set>
@@ -39,11 +42,17 @@ public:
   void getAnalysisUsage(AnalysisUsage &au) const
   {
     au.addRequired< ModuleLoops > ();
+    au.addRequired< Targets > ();
   }
   //void getAnalysisUsage(AnalysisUsage &AU) const override;
   bool runOnModule(Module &M) override;
 
+private:
 
+  VSet liveIns;
+
+  void gatherLiveIns(Loop *loop);
 };
 }
 } // namespace llvm
+#endif

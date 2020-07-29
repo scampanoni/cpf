@@ -1,5 +1,5 @@
 /*TODOs:
- * Identify loop using metadata, match that with a loop in noelle
+ * find out live-ins to the loop
  */
 #define DEBUG_TYPE "pdgbuilder"
 
@@ -44,14 +44,53 @@ using namespace spice;
   "target-fcn", cl::init(""), cl::NotHidden,
   cl::desc("Explicit Target Function"));*/
 
+void Spice::gatherLiveIns(Loop *loop)
+{
+  errs() << "Susan: this function is invoked\n";
+  // Foreach instruction in the loop:
+  for(Loop::block_iterator i=loop->block_begin(), e=loop->block_end(); i!=e; ++i)
+  {
+    BasicBlock *bb = *i;
+    for(BasicBlock::iterator j=bb->begin(), z=bb->end(); j!=z; ++j)
+    {
+      Instruction *inst = &*j;
+
+      // If it has an operand which is not defined within the loop.
+      for(User::op_iterator k=inst->op_begin(), K=inst->op_end(); k!=K; ++k)
+      {
+        Value *v = &**k;
+        if(v)
+           errs() << *v << "\n";
+        Instruction *iv = dyn_cast< Instruction >(v);
+        if( iv && ! loop->contains(iv) )
+        {
+          errs() << "Susan: livein added\n";
+          liveIns.insert(v);
+        }
+        else if( isa< Argument >(v) )
+        {
+          errs() << "Susan: livein added\n";
+          liveIns.insert(v);
+        }
+      }
+    }
+  }
+}
+
 bool Spice::runOnModule (Module &M){
   ModuleLoops &mloops = getAnalysis< ModuleLoops >();
-  //const Targets &targets = getAnalysis< Targets >();
-  //for(Targets::iterator i=targets.begin(mloops), e=targets.end(mloops); i!=e; ++i)
-  //{
-  //  Loop *loop = *i;
-  //  loop->dump();
-  //}
+  const Targets &targets = getAnalysis< Targets >();
+  for(Targets::iterator i=targets.begin(mloops), e=targets.end(mloops); i!=e; ++i)
+  {
+    Loop *loop = *i;
+    gatherLiveIns(loop);
+  }
+  if(liveIns.empty())
+    errs() << "Susan: liveIns is empty\n";
+  for(auto i:liveIns)
+  {
+    errs() << "live-in value is: " << *i << "\n";
+  }
  /* for (Module::iterator func = M.begin(), func_end = M.end(); func != func_end; ++func)
       for (Function::iterator bb = func->begin(), bb_end = func->end(); bb != bb_end; ++bb)
           for (BasicBlock::iterator inst = bb->begin(), inst_end = bb->end(); inst != inst_end; inst++)
