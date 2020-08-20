@@ -258,7 +258,7 @@ void Orchestrator::addressCriticisms(SelectedRemedies &selectedRemedies,
   LLVM_DEBUG(errs() << "Selected Remedies:\n");
   for (Criticism *cr : criticisms) {
     //SetOfRemedies &sors = mapCriticismsToRemeds[cr];
-    auto sors = cr->getRemedies();
+    auto sors = *cr->getRemedies();
     const Remedies_ptr cheapestR = *(sors->begin());
     for (auto &r : *cheapestR) {
       if (!selectedRemedies.count(r)) {

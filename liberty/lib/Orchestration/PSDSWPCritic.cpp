@@ -48,7 +48,7 @@ static EdgeWeight estimate_weight(PerformanceEstimator &perf,
 long getMinRemovalCost(DGEdge<Value> *edge) {
   if (!edge->isRemovableDependence())
     return LONG_MAX;
-  auto sors = edge->getRemedies();
+  auto sors = *edge->getRemedies();
   auto cheapestR = *(sors->begin());
   return LoopAA::totalRemedCost(*cheapestR);
 }
